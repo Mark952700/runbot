@@ -20,3 +20,20 @@ def migrate(cr, version):
 
     # pre-create run_config_id column
     cr.execute('ALTER TABLE runbot_build ADD COLUMN run_config_id integer')
+
+    # pre-fill global result column for old builds
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN global_result character varying")
+    cr.execute("UPDATE runbot_build SET global_result=result")
+
+    # pre-fill global state column for old builds
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN global_state character varying")
+    cr.execute("UPDATE runbot_build SET global_state=state")
+
+    # pre-fill nb_ fields to avoid a huge recompute
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_pending INTEGER")
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_testing INTEGER")
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_running INTEGER")
+
+    cr.execute("UPDATE runbot_build SET nb_pending=0")
+    cr.execute("UPDATE runbot_build SET nb_testing=0")
+    cr.execute("UPDATE runbot_build SET nb_running=0")
