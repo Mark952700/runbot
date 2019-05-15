@@ -30,10 +30,9 @@ def migrate(cr, version):
     cr.execute("UPDATE runbot_build SET global_state=state")
 
     # pre-fill nb_ fields to avoid a huge recompute
-    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_pending INTEGER")
-    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_testing INTEGER")
-    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_running INTEGER")
-
-    cr.execute("UPDATE runbot_build SET nb_pending=0")
-    cr.execute("UPDATE runbot_build SET nb_testing=0")
-    cr.execute("UPDATE runbot_build SET nb_running=0")
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_pending INTEGER DEFAULT 0")
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_testing INTEGER DEFAULT 0")
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_running INTEGER DEFAULT 0")
+    cr.execute("ALTER TABLE runbot_build ALTER COLUMN nb_pending DROP DEFAULT")
+    cr.execute("ALTER TABLE runbot_build ALTER COLUMN nb_testing DROP DEFAULT")
+    cr.execute("ALTER TABLE runbot_build ALTER COLUMN nb_running DROP DEFAULT")
