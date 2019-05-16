@@ -23,10 +23,11 @@ def migrate(cr, version):
 
     # pre-fill global result column for old builds
     cr.execute("ALTER TABLE runbot_build ADD COLUMN global_result character varying")
+    cr.execute("ALTER TABLE runbot_build ADD COLUMN global_state character varying")
     cr.execute("UPDATE runbot_build SET global_result=result, global_state=state WHERE duplicate_id is null")
 
     # set correct values on duplicates too
-    cr.execute("UDPATE runbot_build AS updated_build SET global_result = fb.global_result, global_state = fb.global_state FROM runbot_build AS fb WHERE updated_build.duplicate_id = fb.id")
+    cr.execute("UPDATE runbot_build AS updated_build SET global_result = fb.global_result, global_state = fb.global_state FROM runbot_build AS fb WHERE updated_build.duplicate_id = fb.id")
 
     # pre-fill nb_ fields to avoid a huge recompute
     cr.execute("ALTER TABLE runbot_build ADD COLUMN nb_pending INTEGER DEFAULT 0")
