@@ -22,3 +22,6 @@ def migrate(cr, version):
     # set build_start/_end
     cr.execute("UPDATE runbot_build SET build_start = job_start")
     cr.execute("UPDATE runbot_build SET build_end = job_end")
+
+    # set cron minutes to seconds and multiply by 10
+    cr.execute("UPDATE ir_cron SET interval_type='seconds', interval_number=interval_number*10 WHERE interval_type='minutes'")
