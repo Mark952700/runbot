@@ -384,7 +384,9 @@ class runbot_build(models.Model):
                     'subject': build.subject,
                     'modules': build.modules,
                     'build_type': 'rebuild',
-                    'run_config_id': build.run_config_id.id,
+                    #'run_config_id': build.run_config_id.id,
+                    # we use the branch config for now since we are recomputing dependencies,
+                    # we may introduce an 'exact rebuild' later
                 })
                 build = new_build
             else:

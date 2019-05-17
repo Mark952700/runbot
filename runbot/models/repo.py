@@ -98,7 +98,7 @@ class runbot_repo(models.Model):
         """Execute a git command 'cmd'"""
         for repo in self:
             cmd = ['git', '--git-dir=%s' % repo.path] + cmd
-            _logger.info("git command: %s", ' '.join(cmd))
+            _logger.debug("git command: %s", ' '.join(cmd))
             return subprocess.check_output(cmd).decode('utf-8')
 
     def _git_rev_parse(self, branch_name):
@@ -302,11 +302,16 @@ class runbot_repo(models.Model):
         fname_fetch_head = os.path.join(repo.path, 'FETCH_HEAD')
         if not force and os.path.isfile(fname_fetch_head):
             fetch_time = os.path.getmtime(fname_fetch_head)
-            if repo.mode == 'hook' and repo.hook_time and dt2time(repo.hook_time) < fetch_time:
-                t0 = time.time()
-                _logger.debug('repo %s skip hook fetch fetch_time: %ss ago hook_time: %ss ago',
-                              repo.name, int(t0 - fetch_time), int(t0 - dt2time(repo.hook_time)))
-                return
+            if repo.mode == 'hook':
+                if not repo.hook_time:
+                    _logger.debug('repo %s skip hook no hook', repo.name)
+                    return
+                elif dt2time(repo.hook_time) < fetch_time:
+                    t0 = time.time()
+                    _logger.debug('repo %s skip hook fetch fetch_time: %ss ago hook_time: %ss ago',
+                                repo.name, int(t0 - fetch_time), int(t0 - dt2time(repo.hook_time)))
+                    return
+
         self._update_fetch_cmd()
 
     def _update_fetch_cmd(self):

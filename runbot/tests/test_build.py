@@ -60,6 +60,42 @@ class Test_Build(common.TransactionCase):
         cmd = build._cmd()[0]
         self.assertIn('--log-db=%s' % uri, cmd)
 
+    def test_build_config_from_branch_default(self):
+        """test build run_config_id is computed from branch default run_config_id"""
+        build = self.Build.create({
+            'branch_id': self.branch.id,
+            'name': 'd0d0caca0000ffffffffffffffffffffffffffff',
+        })
+        self.assertEqual(build.run_config_id, self.env.ref('runbot.runbot_build_config_default'))
+
+    def test_build_config_from_branch_testing(self):
+        """test build run_config_id is computed from branch"""
+        self.branch.run_config_id = self.env.ref('runbot.runbot_build_config_default_no_run')
+        build = self.Build.create({
+            'branch_id': self.branch.id,
+            'name': 'd0d0caca0000ffffffffffffffffffffffffffff',
+        })
+        self.assertEqual(build.run_config_id, self.branch.run_config_id, "run_config_id should be the same as the branch")
+
+    def test_build_from_branch_no_build(self):
+        """test build is not even created when branch no_build is True"""
+        self.branch.no_build = True
+        build = self.Build.create({
+            'branch_id': self.branch.id,
+            'name': 'd0d0caca0000ffffffffffffffffffffffffffff',
+        })
+        self.assertEqual(build, self.Build, "build should be an empty recordset")
+
+    def test_build_config_can_be_set(self):
+        """test build run_config_id can be set to something different than the one on the branch"""
+        self.branch.run_config_id = self.env.ref('runbot.runbot_build_config_default')
+        build = self.Build.create({
+            'branch_id': self.branch.id,
+            'name': 'd0d0caca0000ffffffffffffffffffffffffffff',
+            'run_config_id': self.env.ref('runbot.runbot_build_config_default_no_run').id
+        })
+        self.assertEqual(build.run_config_id, self.env.ref('runbot.runbot_build_config_default_no_run'), "run_config_id should be the one set on the build")
+
     @patch('odoo.addons.runbot.models.build._logger')
     def test_build_skip(self, mock_logger):
         """test build is skipped"""
