@@ -40,7 +40,7 @@ class runbot_repo(models.Model):
     modules_auto = fields.Selection([('none', 'None (only explicit modules list)'),
                                      ('repo', 'Repository modules (excluding dependencies)'),
                                      ('all', 'All modules (including dependencies)')],
-                                    default='repo',
+                                    default='all',
                                     string="Other modules to install automatically")
 
     dependency_ids = fields.Many2many(

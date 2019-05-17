@@ -8,16 +8,13 @@ import shlex
 import shutil
 import subprocess
 import time
-from ..common import dt2time, fqdn, now, grep, time2str, rfind, uniq_list, local_pgadmin_cursor, s2human
+from ..common import dt2time, fqdn, now, grep, uniq_list, local_pgadmin_cursor, s2human
 from ..container import docker_build, docker_stop, docker_is_running, docker_get_gateway_ip, build_odoo_cmd
 from odoo import models, fields, api
 from odoo.exceptions import UserError
 from odoo.http import request
 from odoo.tools import config, appdirs
 from collections import defaultdict
-
-_re_error = r'^(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} \d+ (?:ERROR|CRITICAL) )|(?:Traceback \(most recent call last\):)$'
-_re_warning = r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} \d+ WARNING '
 
 _logger = logging.getLogger(__name__)
 
@@ -545,51 +542,8 @@ class runbot_build(models.Model):
                     'job_end': now(),
                 }
                 # make result of previous job
-                if build.active_step.coverage:
-                    build._log('coverage_result', 'Start getting coverage result')
-                    cov_path = build._path('coverage/index.html')
-                    if os.path.exists(cov_path):
-                        with open(cov_path,'r') as f:
-                            data = f.read()
-                            covgrep = re.search(r'pc_cov.>(?P<coverage>\d+)%', data)
-                            build_values['coverage_result'] = covgrep and covgrep.group('coverage') or False
-                            if build_values['coverage_result']:
-                                build._log('coverage_result', 'Coverage result: %s' % build_values['coverage_result'])
-                            else:
-                                build._log('coverage_result', 'Coverage result not found', level='WARNING')
-                            
-                    else:
-                        build._log('coverage_result', 'Coverage file not found', level='WARNING')
-
-                if build.active_step.test_enable or build.active_step.test_tags:
-                    build._log('run', 'Getting results for build %s' % build.dest)
-                    log_file = build._path('logs', '%s.txt' % build.active_step.name)
-                    if not os.path.isfile(log_file):
-                        build_values['local_result'] = 'ko'
-                        build._log('_checkout', "Log file not found at the end of test job", level="ERROR")
-                    else:
-                        log_time = time.localtime(os.path.getmtime(log_file))
-                        build_values = {
-                            'job_end': time2str(log_time),
-                        }
-                        if not build.local_result or build.local_result in ['ok', "warn"]:
-                            if grep(log_file, ".modules.loading: Modules loaded."):
-                                local_result = False
-                                if rfind(log_file, _re_error):
-                                    local_result = 'ko'
-                                    build._log('_checkout', 'Error or traceback found in logs', level="ERROR")
-                                elif rfind(log_file, _re_warning):
-                                    local_result = 'warn'
-                                    build._log('_checkout', 'Warning found in logs', level="WARNING")
-                                elif not grep(log_file, "Initiating shutdown"): # todo check this
-                                    local_result = 'ko'
-                                    build._log('_checkout', 'No "Initiating shutdown" found in logs, maybe because of cpu limit.', level="ERROR")
-                                else:
-                                    local_result = 'ok'
-                                build_values['local_result'] = build._get_worst_result([build.local_result, local_result])
-                            else:
-                                build_values['local_result'] = 'ko'
-                                build._log('_checkout', "Module loaded not found in logs", level="ERROR")
+                results = build.active_step._make_results(build)
+                build_values.update(results)
 
                 # Non running build in
                 notify_end_job = build.active_step.job_type != 'create_build'

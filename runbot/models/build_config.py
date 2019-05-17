@@ -3,13 +3,17 @@ import logging
 import os
 import re
 import shlex
-from ..common import now, grep, get_py_version
+import time
+from ..common import now, grep, get_py_version, time2str, rfind
 from ..container import docker_run, docker_get_gateway_ip, build_odoo_cmd
 from odoo import models, fields, api, SUPERUSER_ID
 from odoo.exceptions import UserError, ValidationError
 from odoo.tools.safe_eval import safe_eval, test_python_expr
 
 _logger = logging.getLogger(__name__)
+
+_re_error = r'^(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} \d+ (?:ERROR|CRITICAL) )|(?:Traceback \(most recent call last\):)$'
+_re_warning = r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} \d+ WARNING '
 
 class Config(models.Model):
     _name = "runbot.build.config"
@@ -213,58 +217,6 @@ class ConfigStep(models.Model):
         eval_ctx = {'self': self, 'build': build, 'log_path': log_path}
         return safe_eval(self.sudo().code.strip(), eval_ctx, mode="exec", nocopy=True)
 
-    def _run_odoo_install(self, build, log_path):
-        cmd, _ = build._cmd()
-        # create db if needed
-        db_name = "%s-%s" % (build.dest, self.db_name)
-        if self.create_db:
-            build._local_pg_createdb(db_name)
-        cmd += ['-d', db_name]
-        # list module to install
-        modules_to_install = set([mod.strip() for mod in self.install_modules.split(',')])
-        if '*' in modules_to_install:
-            modules_to_install.remove('*')
-            default_mod = set([mod.strip() for mod in build.modules.split(',')])
-            modules_to_install = default_mod | modules_to_install
-            #todo add without support
-        mods = ",".join(modules_to_install)
-        if mods:
-            cmd += ['-i', mods]
-        if self.test_enable:
-            if grep(build._server("tools/config.py"), "test-enable"):
-                cmd.extend(['--test-enable'])
-            else: 
-                build._log('test_all', 'Installing modules without testing', level='WARNING')
-        if self.test_tags:
-                test_tags = self.test_tags.replace(' ','')
-                cmd.extend(['--test-tags', test_tags])
-
-        cmd += ['--stop-after-init'] # install job should always finish
-        cmd += ['--log-level=test', '--max-cron-threads=0']
-
-        if self.extra_params:
-            cmd.extend(shlex.split(self.extra_params))
-        if self.coverage:
-            build.coverage = True
-            available_modules = [  # todo extract this to build methos
-                os.path.basename(os.path.dirname(a))
-                for a in (glob.glob(build._server('addons/*/__openerp__.py')) +
-                          glob.glob(build._server('addons/*/__manifest__.py')))
-            ]
-            module_to_omit = set(available_modules) - modules_to_install
-            omit = ['--omit', ','.join('*addons/%s/*' % m for m in module_to_omit) + '*__manifest__.py']
-            py_version = get_py_version(build)
-            cmd = [ py_version, '-m', 'coverage', 'run', '--branch', '--source', '/data/build'] + omit + cmd
-
-            # prepare coverage result
-            cov_path = build._path('coverage/test_mail_cov_xdo')
-            os.makedirs(cov_path, exist_ok=True)
-            cmdcov = ['&&', py_version, "-m", "coverage", "html", "-d", "/data/build/coverage", "--ignore-errors"]
-            cmd += cmdcov
-        max_timeout = int(self.env['ir.config_parameter'].get_param('runbot.runbot_timeout', default=10000))
-        timeout = min(self.cpu_limit, max_timeout)
-        return docker_run(build_odoo_cmd(cmd), log_path, build._path(), build._get_docker_name(), cpu_limit=timeout)
-
     def _run_odoo_run(self, build, log_path):
         # adjust job_end to record an accurate job_20 job_time
         build._log('run', 'Start running build %s' % build.dest)
@@ -291,6 +243,127 @@ class ConfigStep(models.Model):
         if smtp_host:
             cmd += ['--smtp', smtp_host]
         return docker_run(build_odoo_cmd(cmd), log_path, build._path(), build._get_docker_name(), exposed_ports = [build.port, build.port + 1])
+
+    def _run_odoo_install(self, build, log_path):
+        cmd, _ = build._cmd()
+        # create db if needed
+        db_name = "%s-%s" % (build.dest, self.db_name)
+        if self.create_db:
+            build._local_pg_createdb(db_name)
+        cmd += ['-d', db_name]
+        # list module to install
+        modules_to_install = self._modules_to_install(build)
+        mods = ",".join(modules_to_install)
+        if mods:
+            cmd += ['-i', mods]
+        if self.test_enable:
+            if grep(build._server("tools/config.py"), "test-enable"):
+                cmd.extend(['--test-enable'])
+            else: 
+                build._log('test_all', 'Installing modules without testing', level='WARNING')
+        if self.test_tags:
+                test_tags = self.test_tags.replace(' ','')
+                cmd.extend(['--test-tags', test_tags])
+
+        cmd += ['--stop-after-init'] # install job should always finish
+        cmd += ['--log-level=test', '--max-cron-threads=0']
+
+        if self.extra_params:
+            cmd.extend(shlex.split(self.extra_params))
+
+        cmd += self._post_install_command(build, modules_to_install) # coverage post, extra-checks, ...
+
+        max_timeout = int(self.env['ir.config_parameter'].get_param('runbot.runbot_timeout', default=10000))
+        timeout = min(self.cpu_limit, max_timeout)
+        return docker_run(build_odoo_cmd(cmd), log_path, build._path(), build._get_docker_name(), cpu_limit=timeout)
+    
+    def _module_to_install(self, build):
+        modules_to_install = set([mod.strip() for mod in self.install_modules.split(',')])
+        if '*' in modules_to_install:
+            modules_to_install.remove('*')
+            default_mod = set([mod.strip() for mod in build.modules.split(',')])
+            modules_to_install = default_mod | modules_to_install
+            #todo add without support
+        return modules_to_install
+
+    def _post_install_command(self, build, modules_to_install):
+        if self.coverage:
+            build.coverage = True
+
+            coverage_extra_params = self._coverage_params(build, modules_to_install)
+            py_version = get_py_version(build)
+            cmd = [ py_version, '-m', 'coverage', 'run', '--branch', '--source', '/data/build'] + coverage_extra_params + cmd
+
+            # prepare coverage result
+            cov_path = build._path('coverage')
+            os.makedirs(cov_path, exist_ok=True)
+            return ['&&', py_version, "-m", "coverage", "html", "-d", "/data/build/coverage", "--ignore-errors"]
+        return []
+
+    def _coverage_params(self, build, modules_to_install):
+        available_modules = [  # todo extract this to build methos
+            os.path.basename(os.path.dirname(a))
+            for a in (glob.glob(build._server('addons/*/__openerp__.py')) +
+                        glob.glob(build._server('addons/*/__manifest__.py')))
+        ]
+        module_to_omit = set(available_modules) - modules_to_install
+        return ['--omit', ','.join('*addons/%s/*' % m for m in module_to_omit) + '*__manifest__.py']
+
+    def _make_results(self, build):
+        build_values = {}
+        if self.job_type == 'install_odoo':
+            if self.coverage:
+                self._make_coverage_results(build, build_values)
+            if self.test_enable or self.test_tags:
+                self._make_tests_results(build, build_values)
+        return build_values
+
+    def _make_coverage_results(self, build, build_values):
+        build._log('coverage_result', 'Start getting coverage result')
+        cov_path = build._path('coverage/index.html')
+        if os.path.exists(cov_path):
+            with open(cov_path,'r') as f:
+                data = f.read()
+                covgrep = re.search(r'pc_cov.>(?P<coverage>\d+)%', data)
+                build_values['coverage_result'] = covgrep and covgrep.group('coverage') or False
+                if build_values['coverage_result']:
+                    build._log('coverage_result', 'Coverage result: %s' % build_values['coverage_result'])
+                else:
+                    build._log('coverage_result', 'Coverage result not found', level='WARNING')
+        else:
+            build._log('coverage_result', 'Coverage file not found', level='WARNING')
+
+    def _make_tests_results(self, build, build_values):
+        if self.test_enable or self.test_tags:
+            build._log('run', 'Getting results for build %s' % build.dest)
+            log_file = build._path('logs', '%s.txt' % build.active_step.name)
+            if not os.path.isfile(log_file):
+                build_values['local_result'] = 'ko'
+                build._log('_checkout', "Log file not found at the end of test job", level="ERROR")
+            else:
+                log_time = time.localtime(os.path.getmtime(log_file))
+                build_values = {
+                    'job_end': time2str(log_time),
+                }
+                if not build.local_result or build.local_result in ['ok', "warn"]:
+                    if grep(log_file, ".modules.loading: Modules loaded."):
+                        local_result = False
+                        if rfind(log_file, _re_error):
+                            local_result = 'ko'
+                            build._log('_checkout', 'Error or traceback found in logs', level="ERROR")
+                        elif rfind(log_file, _re_warning):
+                            local_result = 'warn'
+                            build._log('_checkout', 'Warning found in logs', level="WARNING")
+                        elif not grep(log_file, "Initiating shutdown"): # todo check this
+                            local_result = 'ko'
+                            build._log('_checkout', 'No "Initiating shutdown" found in logs, maybe because of cpu limit.', level="ERROR")
+                        else:
+                            local_result = 'ok'
+                        build_values['local_result'] = build._get_worst_result([build.local_result, local_result])
+                    else:
+                        build_values['local_result'] = 'ko'
+                        build._log('_checkout', "Module loaded not found in logs", level="ERROR")
+        return build_values
 
     def _job_state(self):
         self.ensure_one()
